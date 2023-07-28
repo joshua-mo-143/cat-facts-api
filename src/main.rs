@@ -248,7 +248,7 @@ async fn send_subscriber_mail(
             Err(e) => return Err(anyhow!("Had an error while sending emails: {e}")),
         };
 
-        if rows.len() > 0 {
+        if !rows.is_empty() {
         for row in rows {
             let email = Message::builder()
 
