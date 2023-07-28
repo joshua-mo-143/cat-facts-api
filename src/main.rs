@@ -6,6 +6,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::naive::{Days, NaiveDateTime};
+use chrono::Local;
 use lettre::{
     message::header::ContentType, transport::smtp::authentication::Credentials, AsyncSmtpTransport,
     AsyncTransport, Message, Tokio1Executor,
@@ -14,11 +16,9 @@ use libsql_client::{client::Client, Statement};
 use serde::{Deserialize, Serialize};
 use shuttle_secrets::SecretStore;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration as TokioDuration};
-use chrono::Local;
-use chrono::naive::{NaiveDateTime, Days};
-use std::time::Duration;
 
 #[derive(Deserialize, Serialize)]
 pub struct CatFact {
@@ -29,7 +29,7 @@ pub struct CustomService {
     db: Arc<Mutex<Client>>,
     gmail_user: String,
     gmail_password: String,
-    router: Router
+    router: Router,
 }
 
 pub struct AppState {
@@ -71,43 +71,38 @@ async fn axum(
         .get("GMAIL_PASSWORD")
         .unwrap_or_else(|| "None".to_string());
 
-    
-        db.batch([
-                "CREATE TABLE IF NOT EXISTS catfacts (
+    db.batch([
+        "CREATE TABLE IF NOT EXISTS catfacts (
         id integer primary key autoincrement,
         fact text not null,
         created_at datetime default current_timestamp 
         )",
-                "CREATE TABLE IF NOT EXISTS subscribers (
+        "CREATE TABLE IF NOT EXISTS subscribers (
                     id integer primary key autoincrement,
                     email text not null,
         created_at datetime default current_timestamp 
                 )",
-            ])
-            .await
-            .unwrap();
+    ])
+    .await
+    .unwrap();
 
+    let db = Arc::new(Mutex::new(db));
 
-        let db = Arc::new(Mutex::new(db));
-    
-        let state = Arc::new(AppState {
-            db: db.clone(),
-        });
+    let state = Arc::new(AppState { db: db.clone() });
 
-        let router = Router::new()
-            .route("/", get(homepage))
-            .route("/health", get(health_check))
-            .route("/catfact", get(get_record))
-            .route("/catfact/create", post(create_record))
-            .route("/subscribe", post(subscribe))
-            .with_state(state);
-
+    let router = Router::new()
+        .route("/", get(homepage))
+        .route("/health", get(health_check))
+        .route("/catfact", get(get_record))
+        .route("/catfact/create", post(create_record))
+        .route("/subscribe", post(subscribe))
+        .with_state(state);
 
     Ok(CustomService {
         db,
         gmail_user,
         gmail_password,
-        router
+        router,
     })
 }
 
@@ -161,7 +156,7 @@ pub async fn create_record(
         .await
     {
         Ok(_) => Ok((StatusCode::CREATED, "Fact created!".to_string())),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
@@ -200,20 +195,30 @@ pub async fn scheduled_tasks(
             .credentials(creds)
             .build();
 
-    
-    let mut tomorrow_midnight = Local::now().checked_add_days(Days::new(1)).unwrap().date_naive().and_hms_opt(0, 0, 0).unwrap();
+    let mut tomorrow_midnight = Local::now()
+        .checked_add_days(Days::new(1))
+        .unwrap()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
 
     loop {
         let duration = calculate_time_diff(tomorrow_midnight);
-        
-        if duration == std::time::Duration::ZERO {
 
-        send_subscriber_mail(mailer.to_owned(), db.clone()).await.expect("Looks like something went wrong trying to send subscriber mail :(");
-        
-    tomorrow_midnight = Local::now().checked_add_days(Days::new(1)).unwrap().date_naive().and_hms_opt(0, 0, 0).unwrap();
+        if duration == std::time::Duration::ZERO {
+            send_subscriber_mail(mailer.to_owned(), db.clone())
+                .await
+                .expect("Looks like something went wrong trying to send subscriber mail :(");
+
+            tomorrow_midnight = Local::now()
+                .checked_add_days(Days::new(1))
+                .unwrap()
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
         }
         let duration = calculate_time_diff(tomorrow_midnight);
-        
+
         sleep(TokioDuration::from_secs(duration.as_secs())).await;
     }
 
@@ -223,18 +228,21 @@ pub async fn scheduled_tasks(
 fn calculate_time_diff(midnight: NaiveDateTime) -> Duration {
     let now = Local::now().naive_local();
 
-        midnight
-            .signed_duration_since(now)
-            .to_std()
-            .unwrap()
+    midnight.signed_duration_since(now).to_std().unwrap()
 }
 
 async fn send_subscriber_mail(
     mailer: AsyncSmtpTransport<Tokio1Executor>,
     db: Arc<Mutex<Client>>,
 ) -> Result<(), anyhow::Error> {
-        let db = db.lock().await;
+    let db = db.lock().await;
 
+    let rows = match db.execute("SELECT email FROM subscribers").await {
+        Ok(res) => res.rows,
+        Err(e) => return Err(anyhow!("Had an error while sending emails: {e}")),
+    };
+
+    if !rows.is_empty() {
         let cat_fact = match db
             .execute("SELECT fact FROM catfacts order by random() limit 1")
             .await
@@ -243,12 +251,6 @@ async fn send_subscriber_mail(
             Err(e) => return Err(anyhow!("error when trying to get a cat fact: {e}")),
         };
 
-        let rows = match db.execute("SELECT email FROM subscribers").await {
-            Ok(res) => res.rows,
-            Err(e) => return Err(anyhow!("Had an error while sending emails: {e}")),
-        };
-
-        if !rows.is_empty() {
         for row in rows {
             let email = Message::builder()
 
@@ -260,9 +262,9 @@ async fn send_subscriber_mail(
                     .unwrap();
 
             if let Err(e) = mailer.send(email).await {
-                    println!("Something went wrong while sending mail: {e}")
-                }
+                println!("Something went wrong while sending mail: {e}")
             }
+        }
     }
 
     Ok(())
