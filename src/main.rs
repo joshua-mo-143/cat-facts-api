@@ -160,7 +160,7 @@ pub async fn create_record(
         ))
         .await
     {
-        Ok(_) => Ok(StatusCode::CREATED),
+        Ok(_) => Ok((StatusCode::CREATED, "Fact created!".to_string())),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
     }
 }
@@ -248,8 +248,10 @@ async fn send_subscriber_mail(
             Err(e) => return Err(anyhow!("Had an error while sending emails: {e}")),
         };
 
+        if rows.len() > 0 {
         for row in rows {
             let email = Message::builder()
+
                     .from("Cat Facts".parse().unwrap())
                     .to(row.values[0].to_string().parse().unwrap())
                     .subject("Happy new year")
@@ -261,5 +263,7 @@ async fn send_subscriber_mail(
                     println!("Something went wrong while sending mail: {e}")
                 }
             }
+    }
+
     Ok(())
 }
