@@ -169,7 +169,7 @@ pub async fn subscribe(
         .lock()
         .await
         .execute(Statement::with_args(
-            "INSERT INTO subscribers (email) VALUE (?)",
+            "INSERT INTO subscribers (email) values (?)",
             &[req.email],
         ))
         .await
